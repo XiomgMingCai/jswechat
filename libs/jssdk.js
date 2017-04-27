@@ -1,127 +1,151 @@
 const crypto = require('crypto');
 const request = require('request');
 const fs = require('fs');
-const debug = require('debug')('jssdk');
+const debug = require('debug')('jswechat:jssdk');
 
 function JSSDK(appId, appSecret) {
-    this.appId = appId
-    this.appSecret = appSecret
+    this.appId = appId;
+    this.appSecret = appSecret;
 }
 
 JSSDK.prototype = {
-    getSignPackage: function (url) {
-        const jsapiTicket = this.getJsApiTicket();
-        const nonceStr = this.createNonceStr()
-        const timestamp = Math.random(Date.now() / 1000)
-        // 这里参数的顺序要按照 key 值 ASCII 码升序排序
-        const _string = `jsapi_ticket=${jsApiTicket}&noncestr=${nonceStr}&timestamp=${timestamp}&url=${url}`;
-        /*2）将三个参数字符串拼接成一个字符串进行sha1加密*/
-        const hash = crypto.createHash('sha1');
-        const signatrue = hash.update(_string).digest('hex');
-        return {
-            url: url,
-            timestamp: timestamp,
-            signatrue: signatrue,
-            appId: this.appId,
-            noncestr: nonceStr
-        }
+    getSignPackage: function (url, done) {
+        const instance = this;
+
+        this.getJsApiTicket(function (err, jsApiTicket) {
+            if (err) {
+                return done(err);
+            }
+
+            const nonceStr = instance.createNonceStr();
+            const timestamp = Math.round(Date.now() / 1000);
+
+            // 生成签名
+            const rawString = `jsapi_ticket=${jsApiTicket}&noncestr=${nonceStr}&timestamp=${timestamp}&url=${url}`;
+            const hash = crypto.createHash('sha1');
+            const signature = hash.update(rawString).digest('hex');
+
+            done(null, {
+                timestamp,
+                url,
+                signature,
+                // rawString,
+                nonceStr,
+                appId: instance.appId,
+            });
+        });
     },
-    getJsApiTicket: function (Callback) {
-        const intance = this
-        const cachefile = 'jsapiticket.json'
-        const data = intance.readCacheFile(cachefile)
-        const time = Math.round(Date.now() / 1000)
+
+    getJsApiTicket: function (done) {
+        const cacheFile = '.jsapiticket.json';
+        const intance = this;
+        const data = intance.readCacheFile(cacheFile);
+        const time = Math.round(Date.now() / 1000);
 
         if (typeof data.expireTime === 'undefined' || data.expireTime < time) {
+            debug('getJsApiTicket: from server');
             intance.getAccessToken(function (error, accessToken) {
-                const url = `https://api.weixin.qq.com/cgi-bin/ticket/getticket?type=jsapi&access_token=${accessToken}`;
+                if (error) {
+                    debug('getJsApiTicket.token.error:', error);
+                    return done(error, null);
+                }
 
+                const url = `https://api.weixin.qq.com/cgi-bin/ticket/getticket?type=jsapi&access_token=${accessToken}`;
                 request.get(url, function (err, res, body) {
                     if (err) {
-                        debug('getJsApiTicket.request.error: ', err, url)
-                        return Callback(err, null);
+                        debug('getJsApiTicket.request.error:', err, url);
+                        return done(err, null);
                     }
 
-                    debug('getJsApiTicket.request.body: ', body)
+                    debug('getJsApiTicket.request.body:', body);
+
                     try {
-                        const data = JSON.parse(body)
-                        //求到的数据保存
-                        intance.writCacheFile(cachefile, {
-                            expireTime: Math.round(Date.now() / 1000) + 7200,
-                            jsApiTicket: data.ticket
-                        })
-                        Callback(null, data.ticket)
+                        const data = JSON.parse(body);
 
+                        intance.writeCacheFile(cacheFile, {
+                            expireTime: Math.round(Date.now() / 1000) + 7200,
+                            jsApiTicket: data.ticket,
+                        });
+
+                        done(null, data.ticket);
                     } catch (e) {
-                        Callback(e, null)
+                        debug('getJsApiTicket.parse.error:', e, url);
+                        done(e, null);
                     }
-                })
-            })
+                });
+            });
         } else {
-            debug('getJsApiTicket: form cache')
-            Callback(null, data.jsApiTicket)
+            debug('getJsApiTicket: from cache');
+            done(null, data.jsApiTicket);
         }
     },
-    getAccessToken: function () {
-        const intance = this
-        const cachefile = 'getaccesstoken.json'
-        const data = intance.readCacheFile(cachefile)
-        const time = Math.round(Date.now() / 1000)
 
-        console.log(typeof data.expireTime);
-        if (data.expireTime < time) {
-            debug('getAccessToken: form server')
-            const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${ this.appId}&secret=${this.appSecret}`;
+    getAccessToken: function (done) {
+        const cacheFile = '.accesstoken.json';
+        const intance = this;
+        const data = intance.readCacheFile(cacheFile);
+        const time = Math.round(Date.now() / 1000);
 
+        if (typeof data.expireTime === 'undefined' || data.expireTime < time) {
+            debug('getAccessToken: from server');
+            const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${this.appId}&secret=${this.appSecret}`;
             request.get(url, function (err, res, body) {
                 if (err) {
-                    debug('getJsApiTicket.request.error: ', err, url)
-                    return Callback(err, null);
+                    debug('getAccessToken.request.error:', err, url);
+                    return done(err, null);
                 }
 
-                debug('getJsApiTicket.request.body: ', body)
+                debug('getAccessToken.request.body:', body);
+
                 try {
-                    const data = JSON.parse(body)
-                    //求到的数据保存
-                    intance.writCacheFile(cachefile, {
-                        expireTime: Math.round(Date.now() / 1000) + 7200,
-                        jsApiTicket: data.ticket
-                    })
-                    Callback(null, data.ticket)
+                    const data = JSON.parse(body);
 
+                    intance.writeCacheFile(cacheFile, {
+                        expireTime: Math.round(Date.now() / 1000) + 7200,
+                        accessToken: data.access_token,
+                    });
+
+                    done(null, data.access_token);
                 } catch (e) {
-                    Callback(e, null)
+                    debug('getAccessToken.parse.error:', e, url);
+                    done(e, null);
                 }
-            })
+            });
         } else {
-            debug('getAccessToken: form cache')
-            Callback(null, data.jsApiTicket)
+            debug('getAccessToken: from cache');
+            done(null, data.accessToken);
         }
     },
+
     createNonceStr: function () {
-        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-        const _length = chars.length
-        let str = ''
-        for (let i = 0; i < _length; i++) {
-            str += chars.substr(Math.round(Math.random() * _length), 1)
+        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        const length = chars.length;
+        let str = '';
+        for (let i = 0; i < length; i++) {
+            str += chars.substr(Math.round(Math.random() * length), 1);
         }
-        return str
+        return str;
     },
-    //读取缓存文件
+
+    // 从文件里面读取缓存
     readCacheFile: function (filename) {
         try {
-            return JSON.parse(fs.readFileSync(filename))
-        } catch (err) {
-            debug('read file %s failed: %s', filename, err)
+            return JSON.parse(fs.readFileSync(filename));
+        } catch (e) {
+            debug('read file %s failed: %s', filename, e);
         }
-    },
-    //写缓存文件
-    writCacheFile: function (filename, data) {
-        return fs.writeFileSync(filename, JSON.stringify(data))
-    }
 
+        return {};
+    },
+
+    // 往文件里面写缓存
+    writeCacheFile: function (filename, data) {
+        return fs.writeFileSync(filename, JSON.stringify(data));
+    },
 };
 
-module.exports = new JSSDK('wx2b3aaec931ae33f7', '60771f3aea937fca3c2d051c8fc84467')
+const jssdk = new JSSDK('wx2b3aaec931ae33f7', '60771f3aea937fca3c2d051c8fc84467')
+
+module.exports = jssdk;
 
 
